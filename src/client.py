@@ -249,6 +249,7 @@ class MaxClient:
         chat_id: Optional[int] = None,
         format: str = "html",
         notify: bool = True,
+        reply_to: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not user_id and not chat_id:
             raise ValueError("Either user_id or chat_id must be set")
@@ -262,6 +263,8 @@ class MaxClient:
             query["chat_id"] = chat_id
 
         payload = {"text": text, "format": format, "notify": notify}
+        if reply_to:
+            payload["reply_to"] = reply_to
         status, data = await self.request("POST", PATH_MESSAGES, query=query, json_data=payload)
         return data
 

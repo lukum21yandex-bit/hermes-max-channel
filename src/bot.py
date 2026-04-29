@@ -12,6 +12,7 @@ from typing import Callable, Optional, Coroutine, Any
 from dataclasses import dataclass
 
 from .client import MaxClient, parse_update, UpdateType, MessageCreatedUpdate, User
+from .file_utils import FileLock, atomic_write_json, locked_read_json, locked_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -30,27 +31,37 @@ class BotConfig:
     allowed_user_ids: Optional[list[int]] = None  # If set, only these users can interact
 
 
-def _read_json(path: Path, default=None):
-    if path.exists():
-        try:
+# Lock file paths (co-located with data files)
+INBOX_LOCK = INBOX_PATH.with_suffix(".lock")
+OUTBOX_LOCK = OUTBOX_PATH.with_suffix(".lock")
+PROCESSED_LOCK = Path("data/processed.lock")
+
+
+def _read_locked(path: Path, lock: Path, default=None):
+    """Read JSON with shared lock (exclusive for simplicity)."""
+    try:
+        with FileLock(lock, timeout=5):
+            if not path.exists():
+                return default or []
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error("Read error %s: %s", path, e)
-    return default or []
+    except Exception as e:
+        logger.error("Locked read error %s: %s", path, e)
+        return default or []
 
 
-def _append_json(path: Path, item: dict):
-    data = _read_json(path, default=[])
-    data.append(item)
-    _write_json(path, data)
+def _write_locked(path: Path, lock: Path, data):
+    """Write JSON atomically with exclusive lock."""
+    with FileLock(lock, timeout=5):
+        atomic_write_json(path, data)
 
 
-def _write_json(path: Path, data):
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
+def _append_to_inbox(item: dict):
+    """Append item to inbox.json atomically under lock."""
+    with FileLock(INBOX_LOCK, timeout=5):
+        inbox = _read_locked(INBOX_PATH, INBOX_LOCK, default=[])
+        inbox.append(item)
+        atomic_write_json(INBOX_PATH, inbox)
 
 
 class HermesMaxBot:
@@ -141,13 +152,14 @@ class HermesMaxBot:
             "reply_sent": False,
             "processed_at": None,
         }
-        _append_json(INBOX_PATH, item)
+        _append_to_inbox(item)
         logger.debug("Wrote to inbox: user=%s mid=%s", item["user_id"], item["mid"])
 
     async def _process_outbox(self):
         """Check outbox and send pending replies."""
         try:
-            outbox = _read_json(OUTBOX_PATH, default=[])
+            # Read outbox under lock
+            outbox = _read_locked(OUTBOX_PATH, OUTBOX_LOCK, default=[])
             if not outbox:
                 return
 
@@ -157,50 +169,93 @@ class HermesMaxBot:
 
             logger.info("Outbox: %d pending replies", len(pending))
 
+            sent_items = []  # will be archived
+            to_keep = []     # pending that remain (failed)
+
             for reply in pending:
                 try:
                     user_id = reply["user_id"]
                     text = reply["text"]
-                    mid = reply.get("mid")  # optional: reply to specific message
+                    reply_to = reply.get("reply_to")  # optional: reply to specific message
 
-                    # Send via MAX API
-                    await self.client.send_message(text=text, user_id=user_id)
+                    # Send via MAX API (reply_to is passed as message mid to reply to)
+                    await self.client.send_message(text=text, user_id=user_id, reply_to=reply_to)
                     logger.info("Sent reply to user %s: %s", user_id, text[:50])
 
-                    # Mark as sent
+                    # Mark as sent and prepare for archival
                     reply["sent"] = True
                     reply["sent_at"] = time.time()
                     self._stats["messages_sent"] += 1
-
-                    # Remove from outbox after send? Keep for audit.
-                    # For now, keep but mark sent.
+                    sent_items.append(reply)
                 except Exception as e:
                     logger.error("Failed to send reply to %s: %s", reply.get("user_id"), e)
+                    reply["error"] = str(e)
+                    reply["failed_at"] = time.time()
                     self._stats["errors"] += 1
+                    to_keep.append(reply)  # keep for retry
 
-            # Write updated outbox
-            _write_json(OUTBOX_PATH, outbox)
+            # Keep failed items in outbox, drop successfully sent ones
+            remaining = to_keep + [m for m in outbox if m.get("sent")]
+            if remaining:
+                _write_locked(OUTBOX_PATH, OUTBOX_LOCK, remaining)
+            else:
+                # No remaining — truncate file
+                with FileLock(OUTBOX_LOCK, timeout=5):
+                    OUTBOX_PATH.write_text("[]", encoding="utf-8")
+
+            # Archive successfully sent items
+            if sent_items:
+                with FileLock(PROCESSED_LOCK, timeout=5):
+                    processed = _read_locked(Path("data/processed.json"), PROCESSED_LOCK, default=[])
+                    processed.extend(sent_items)
+                    atomic_write_json(Path("data/processed.json"), processed)
+                logger.info("Archived %d sent messages", len(sent_items))
 
         except Exception as e:
             logger.exception("Outbox processing error: %s", e)
-
     async def _process_outbox_for_user(self, user_id: int, chat_id: int):
         """Send any pending replies for a specific user (fast path)."""
         try:
-            outbox = _read_json(OUTBOX_PATH, default=[])
+            outbox = _read_locked(OUTBOX_PATH, OUTBOX_LOCK, default=[])
             pending = [m for m in outbox if not m.get("sent") and m.get("user_id") == user_id]
             if not pending:
                 return
 
-            for reply in pending:
-                text = reply["text"]
-                await self.client.send_message(text=text, user_id=user_id)
-                reply["sent"] = True
-                reply["sent_at"] = time.time()
-                self._stats["messages_sent"] += 1
-                logger.info("Sent reply to user %s: %s", user_id, text[:50])
+            sent_items = []
+            to_keep = []
 
-            _write_json(OUTBOX_PATH, outbox)
+            for reply in pending:
+                try:
+                    text = reply["text"]
+                    reply_to = reply.get("reply_to")
+                    await self.client.send_message(text=text, user_id=user_id, reply_to=reply_to)
+                    reply["sent"] = True
+                    reply["sent_at"] = time.time()
+                    self._stats["messages_sent"] += 1
+                    logger.info("Sent reply to user %s: %s", user_id, text[:50])
+                    sent_items.append(reply)
+                except Exception as e:
+                    logger.error("Failed send to user %s: %s", user_id, e)
+                    reply["error"] = str(e)
+                    reply["failed_at"] = time.time()
+                    to_keep.append(reply)
+
+            # Rewrite outbox: keep failed + all other non-sent items
+            remaining = to_keep + [m for m in outbox if m.get("sent") or m.get("user_id") != user_id]
+            if remaining:
+                _write_locked(OUTBOX_PATH, OUTBOX_LOCK, remaining)
+            else:
+                with FileLock(OUTBOX_LOCK, timeout=5):
+                    OUTBOX_PATH.write_text("[]", encoding="utf-8")
+
+            # Archive sent
+            if sent_items:
+                with FileLock(PROCESSED_LOCK, timeout=5):
+                    processed = _read_locked(Path("data/processed.json"), PROCESSED_LOCK, default=[])
+                    processed.extend(sent_items)
+                    atomic_write_json(Path("data/processed.json"), processed)
+                logger.info("Archived %d sent messages (fast path)", len(sent_items))
+
         except Exception as e:
             logger.exception("Outbox send error: %s", e)
 

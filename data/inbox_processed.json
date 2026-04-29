@@ -29,5 +29,38 @@
     "reply_sent": true,
     "processed_at": 1777474642.5745687,
     "reply_mid": "6ac2e0cc-fe88-421e-bd76-09748b60c0c6"
+  },
+  {
+    "user_id": 5512353,
+    "username": "Александр П",
+    "text": "Привет",
+    "mid": "mid.0000000010d3a886019dd9bf8608000f",
+    "chat_id": 282306694,
+    "timestamp": 1777474713.2649436,
+    "reply_sent": true,
+    "processed_at": 1777474713.6701458,
+    "reply_mid": "30b0bfd2-0dd9-490a-b103-285bf41b6e43"
+  },
+  {
+    "user_id": 5512353,
+    "username": "Александр П",
+    "text": "Привет",
+    "mid": "mid.0000000010d3a886019dd9bf8608000f",
+    "chat_id": 282306694,
+    "timestamp": 1777474713.2649436,
+    "reply_sent": true,
+    "processed_at": 1777474713.6701458,
+    "reply_mid": "30b0bfd2-0dd9-490a-b103-285bf41b6e43"
+  },
+  {
+    "user_id": 5512353,
+    "username": "Александр П",
+    "text": "Отлично мы теперь можем общаться здесь в max",
+    "mid": "mid.0000000010d3a886019dd9c089616194",
+    "chat_id": 282306694,
+    "timestamp": 1777474767.1917856,
+    "reply_sent": true,
+    "processed_at": 1777474767.860567,
+    "reply_mid": "cf53a36d-d9fc-4012-ae32-9e6192f863c6"
   }
 ]
