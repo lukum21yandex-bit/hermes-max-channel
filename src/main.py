@@ -3,7 +3,7 @@
 Hermes MAX Bot — entry point.
 
 Run:
-    export MAX_TOKEN=your_token
+    export MAX_TOKEN=***
     python -m src.main
 """
 import asyncio
@@ -24,7 +24,7 @@ if dotenv_path.exists():
     load_dotenv(dotenv_path)
 
 from src.bot import HermesMaxBot, BotConfig
-from src.client import MessageCreatedUpdate
+from src.hermes_worker import HermesWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,26 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
-async def echo_handler(update: MessageCreatedUpdate) -> None:
-    """Simple echo reply for testing."""
-    text = update.message.body.text or "[без текста]"
-    sender = update.message.sender
-
-    reply = f"🤖 Эхо: {text}"
-    try:
-        await bot.client.send_message(text=reply, user_id=sender.user_id)
-        logger.info("Replied to %s", sender.name)
-    except Exception as e:
-        logger.exception("Failed to send reply: %s", e)
-
-
-# Global bot instance (for handler closure)
-bot: Optional[HermesMaxBot] = None
-
-
 async def amain():
-    global bot
-
     token = os.getenv("MAX_TOKEN")
     if not token:
         logger.error("MAX_TOKEN not set. Set env var or create .env file")
@@ -74,15 +55,21 @@ async def amain():
     )
 
     bot = HermesMaxBot(config)
-    bot.on_message(echo_handler)
+    worker = HermesWorker(poll_interval=1.0)
 
     try:
-        await bot.run()
+        # Run both concurrently
+        logger.info("Starting Hermes MAX Bot + AI Worker...")
+        await asyncio.gather(
+            bot.run(),
+            worker.run(),
+        )
     except KeyboardInterrupt:
-        logger.info("Interrupted")
+        logger.info("Interrupted by user")
     finally:
-        if bot:
-            bot.stop()
+        bot.stop()
+        await worker.stop()
+        logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":
