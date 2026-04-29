@@ -34,7 +34,7 @@ class BotConfig:
 # Lock file paths (co-located with data files)
 INBOX_LOCK = INBOX_PATH.with_suffix(".lock")
 OUTBOX_LOCK = OUTBOX_PATH.with_suffix(".lock")
-PROCESSED_LOCK = Path("data/processed.lock")
+OUTBOX_PROC_LOCK = Path("data/outbox_processed.lock")
 
 
 def _read_locked(path: Path, lock: Path, default=None):
@@ -205,8 +205,8 @@ class HermesMaxBot:
 
             # Archive successfully sent items
             if sent_items:
-                with FileLock(PROCESSED_LOCK, timeout=5):
-                    processed = _read_locked(Path("data/processed.json"), PROCESSED_LOCK, default=[])
+                with FileLock(OUTBOX_PROC_LOCK, timeout=5):
+                    processed = _read_locked(Path("data/processed.json"), OUTBOX_PROC_LOCK, default=[])
                     processed.extend(sent_items)
                     atomic_write_json(Path("data/processed.json"), processed)
                 logger.info("Archived %d sent messages", len(sent_items))
@@ -250,8 +250,8 @@ class HermesMaxBot:
 
             # Archive sent
             if sent_items:
-                with FileLock(PROCESSED_LOCK, timeout=5):
-                    processed = _read_locked(Path("data/processed.json"), PROCESSED_LOCK, default=[])
+                with FileLock(OUTBOX_PROC_LOCK, timeout=5):
+                    processed = _read_locked(Path("data/processed.json"), OUTBOX_PROC_LOCK, default=[])
                     processed.extend(sent_items)
                     atomic_write_json(Path("data/processed.json"), processed)
                 logger.info("Archived %d sent messages (fast path)", len(sent_items))

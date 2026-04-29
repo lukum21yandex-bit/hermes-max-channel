@@ -241,7 +241,7 @@ class HermesWorker:
             # Archive processed inbox messages (keep inbox lean)
             if sent_to_archive:
                 with FileLock(INBOX_PROC_LOCK, timeout=5):
-                    processed_inbox = _read_locked(PROCESSED_PATH, PROCESSED_LOCK, default=[])
+                    processed_inbox = _read_locked(PROCESSED_PATH, INBOX_ARCHIVE_LOCK, default=[])
                     processed_inbox.extend(sent_to_archive)
                     atomic_write_json(PROCESSED_PATH, processed_inbox)
                 logger.info("Archived %d processed inbox messages", len(sent_to_archive))

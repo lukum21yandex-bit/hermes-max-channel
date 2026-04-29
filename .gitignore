@@ -10,3 +10,7 @@ db.sqlite3
 logs/
 *.log
 .env.*.local
+bot.pid
+data/*.lock
+data/processed.json
+data/inbox_processed.json
