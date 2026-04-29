@@ -1,0 +1,33 @@
+[
+  {
+    "user_id": 123456,
+    "name": "TestUser",
+    "text": "Привет, Хермес!",
+    "mid": "test_mid_001",
+    "ts": 1777473578.9359543,
+    "reply_sent": true,
+    "processed_at": 1777474542.0444853,
+    "reply_mid": "fbce0947-b646-4f9f-968c-2a3b50edda01"
+  },
+  {
+    "user_id": 123456,
+    "name": "TestUser",
+    "text": "Привет, Хермес!",
+    "mid": "test_mid_001",
+    "ts": 1777473578.9359543,
+    "reply_sent": true,
+    "processed_at": 1777474542.0444853,
+    "reply_mid": "fbce0947-b646-4f9f-968c-2a3b50edda01"
+  },
+  {
+    "user_id": 999888777,
+    "username": "Tester",
+    "text": "Привет от тест-бота!",
+    "mid": "test_1777474642",
+    "chat_id": 999888777,
+    "timestamp": 1777474642.2016635,
+    "reply_sent": true,
+    "processed_at": 1777474642.5745687,
+    "reply_mid": "6ac2e0cc-fe88-421e-bd76-09748b60c0c6"
+  }
+]

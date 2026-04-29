@@ -37,6 +37,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
+# Write PID file (for health checks / tests)
+pid_file = Path(__file__).parent.parent / "bot.pid"
+pid_file.write_text(str(os.getpid()))
+logger.info("PID file written: %s", pid_file)
 
 async def amain():
     token = os.getenv("MAX_TOKEN")

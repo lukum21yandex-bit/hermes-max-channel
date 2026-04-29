@@ -179,7 +179,7 @@ class HermesWorker:
                         username=msg_dict.get("username", ""),
                         text=msg_dict["text"],
                         mid=msg_dict["mid"],
-                        chat_id=msg_dict["chat_id"],
+                        chat_id=msg_dict.get("chat_id") or msg_dict["user_id"],
                         timestamp=msg_dict.get("timestamp", time.time()),
                         reply_sent=False,
                     )

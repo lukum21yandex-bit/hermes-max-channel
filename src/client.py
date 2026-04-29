@@ -1,7 +1,11 @@
-"""Data models for MAX Bot API and HTTP client.
-
-This module re-exports models from .models and adds HTTP client.
 """
+MAX Bot API HTTP client.
+
+Based on official Go client: https://github.com/max-messenger/max-bot-api-client-go
+"""
+import logging
+
+logger = logging.getLogger(__name__)
 import asyncio
 import json
 import time
@@ -38,18 +42,16 @@ __all__ = [
 ]
 
 
-# Constants from Go client
+# Constants
 DEFAULT_BASE_URL = "https://platform-api.max.ru/"
 MAX_VERSION = "1.2.5"
 MAX_UPDATE_LIMIT = 50
 DEFAULT_TIMEOUT = 30.0  # seconds
-DEFAULT_PAUSE = 1.0      # seconds between longpoll cycles
 MAX_RETRIES = 3
-RATE_LIMIT_RPS = 2.0    # MAX API limit: 2 requests per second
+RATE_LIMIT_RPS = 2.0  # MAX API limit: 2 requests per second
 
 
 class UpdateType(str, Enum):
-    """All update types supported by MAX API."""
     MESSAGE_CALLBACK = "message_callback"
     MESSAGE_CREATED = "message_created"
     MESSAGE_REMOVED = "message_removed"
@@ -69,18 +71,18 @@ class UpdateType(str, Enum):
 PATH_UPDATES = "updates"
 PATH_MESSAGES = "messages"
 PATH_ME = "me"
+PATH_SUBSCRIPTIONS = "subscriptions"
+PATH_ANSWERS = "answers"
 
 
 @dataclass
 class UpdateList:
-    """Paginated list of updates."""
     updates: list
     marker: Optional[int] = None
 
 
 class RateLimiter:
     """Simple rate limiter for 2 RPS constraint."""
-
     def __init__(self, rps: float = RATE_LIMIT_RPS):
         self.rps = rps
         self.interval = 1.0 / rps
@@ -88,7 +90,6 @@ class RateLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self):
-        """Wait until next allowed request."""
         async with self._lock:
             elapsed = time.monotonic() - self.last_call
             if elapsed < self.interval:
@@ -97,11 +98,7 @@ class RateLimiter:
 
 
 class MaxClient:
-    """
-    HTTP client for MAX Bot API.
-
-    Handles authentication, rate limiting, retries, and JSON encoding/decoding.
-    """
+    """HTTP client for MAX Bot API with rate limiting and retry support."""
 
     def __init__(
         self,
@@ -157,7 +154,7 @@ class MaxClient:
                 url += "?" + urlencode(params)
         return url
 
-    async def request(
+    async def request_once(
         self,
         method: str,
         path: str,
@@ -165,7 +162,7 @@ class MaxClient:
         json_data: Optional[Dict] = None,
     ) -> Tuple[int, Dict[str, Any]]:
         """
-        Rate-limited HTTP request with retry logic.
+        Single HTTP request (no retry). Rate-limited.
         Returns (status_code, json_response).
         """
         await self.rate_limiter.acquire()
@@ -176,27 +173,34 @@ class MaxClient:
         assert self._client is not None
 
         url = self._url(path, query)
-        last_exc = None
+        resp = await self._client.request(method, url, json=json_data)
+        data = resp.json()
+        if resp.status_code != 200:
+            return resp.status_code, data
+        return 200, data
 
+    async def request(
+        self,
+        method: str,
+        path: str,
+        query: Optional[Dict] = None,
+        json_data: Optional[Dict] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """
+        Rate-limited HTTP request with retry logic (3 attempts, exp backoff).
+        Returns (status_code, json_response).
+        """
+        last_exc = None
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await self._client.request(
-                    method,
-                    url,
-                    json=json_data,
-                )
-                data = resp.json()
-                if resp.status_code != 200:
-                    return resp.status_code, data
-                return 200, data
-            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                return await self.request_once(method, path, query, json_data)
+            except httpx.RequestError as e:
                 last_exc = e
                 if attempt < MAX_RETRIES - 1:
                     backoff = 2 ** attempt
                     await asyncio.sleep(backoff)
                     continue
                 break
-
         raise RuntimeError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}")
 
     async def get_updates(
@@ -209,11 +213,8 @@ class MaxClient:
         """
         Fetch updates via longpoll.
 
-        Args:
-            marker: Last seen update marker (for pagination)
-            limit: Max updates per request (1-50)
-            timeout: Longpoll timeout in seconds (MAX expects 30)
-            types: Filter by update types
+        Longpoll timeout is expected; treat ReadTimeout as empty update list.
+        Other network errors are propagated to caller (bot loop) for handling.
         """
         query = {
             "v": MAX_VERSION,
@@ -224,7 +225,17 @@ class MaxClient:
         if types:
             query["types"] = types
 
-        status, data = await self.request("GET", PATH_UPDATES, query=query)
+        try:
+            status, data = await self.request_once("GET", PATH_UPDATES, query=query)
+            if status != 200:
+                logger.warning("get_updates non-200 status: %s", status)
+                return UpdateList(updates=[], marker=marker)
+        except httpx.ReadTimeout:
+            # Expected longpoll timeout — return empty list
+            return UpdateList(updates=[], marker=marker)
+        except httpx.RequestError:
+            # Propagate other network errors to bot.run()
+            raise
 
         updates_raw = data.get("updates", [])
         updates = [parse_update(u) for u in updates_raw]
@@ -239,11 +250,6 @@ class MaxClient:
         format: str = "html",
         notify: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Send a message to a user or chat.
-
-        Exactly one of user_id or chat_id must be provided.
-        """
         if not user_id and not chat_id:
             raise ValueError("Either user_id or chat_id must be set")
         if user_id and chat_id:
@@ -256,12 +262,10 @@ class MaxClient:
             query["chat_id"] = chat_id
 
         payload = {"text": text, "format": format, "notify": notify}
-
         status, data = await self.request("POST", PATH_MESSAGES, query=query, json_data=payload)
         return data
 
     async def get_me(self) -> Dict[str, Any]:
-        """Return bot info."""
         status, data = await self.request("GET", PATH_ME)
         return data
 
@@ -269,7 +273,6 @@ class MaxClient:
 # --- Parser utilities ---
 
 def parse_update(raw: Dict[str, Any]) -> Update:
-    """Convert JSON update dict into typed Update object."""
     utype = raw.get("update_type", "")
 
     if utype == UpdateType.MESSAGE_CREATED:
