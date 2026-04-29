@@ -1,8 +1,17 @@
 [project]
-name = 'hermes-max-channel'
-version = '0.1.0'
-description = 'Hermes bot for MAX.me'
-requires-python = '>=3.11'
+name = "hermes-max-channel"
+version = "0.1.0"
+description = "Hermes bot for MAX.ru messenger (longpoll + future webhook)"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.0",
+]
 
 [project.scripts]
-hermes-max = 'src.bot:main'
+hermes-max = "src.main:amain"
+
+[tool.uvicorn]
+# For future webhook mode
+# app = "src.webhook:app"
