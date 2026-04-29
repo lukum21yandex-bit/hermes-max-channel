@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes MAX Channel Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/hermes-max-channel
+Environment="MAX_TOKEN=YOUR_TOKEN"
+ExecStart=/usr/bin/python3 -m src.bot
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/inbox.json
+data/outbox.json
+data/state.json
+db.sqlite3
+logs/
+*.log
+.env.*.local
