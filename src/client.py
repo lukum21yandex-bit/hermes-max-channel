@@ -26,7 +26,6 @@ from .models import (
 
 __all__ = [
     "MaxClient",
-    "Message",
     "UpdateList",
     "UpdateType",
     "parse_update",
@@ -70,44 +69,6 @@ class UpdateType(str, Enum):
 PATH_UPDATES = "updates"
 PATH_MESSAGES = "messages"
 PATH_ME = "me"
-PATH_SUBSCRIPTIONS = "subscriptions"
-PATH_ANSWERS = "answers"
-
-
-@dataclass
-class Message:
-    """Builder for sending messages."""
-    user_id: int = 0
-    chat_id: int = 0
-    disable_link_preview: bool = False
-    text: Optional[str] = None
-    format: str = "html"  # or "markdown"
-    notify: bool = True
-    attachments: list = field(default_factory=list)
-
-    def set_user(self, user_id: int) -> "Message":
-        self.user_id = user_id
-        return self
-
-    def set_chat(self, chat_id: int) -> "Message":
-        self.chat_id = chat_id
-        return self
-
-    def set_text(self, text: str) -> "Message":
-        self.text = text
-        return self
-
-    def to_dict(self) -> dict:
-        payload = {}
-        if self.text:
-            payload["text"] = self.text
-        if self.format:
-            payload["format"] = self.format
-        if self.notify is not None:
-            payload["notify"] = self.notify
-        if self.attachments:
-            payload["attachments"] = self.attachments
-        return payload
 
 
 @dataclass
@@ -359,8 +320,8 @@ def parse_recipient(data: Dict[str, Any]) -> Recipient:
     )
 
 
-def parse_message(data: Dict[str, Any]) -> Message:
-    return Message(
+def parse_message(data: Dict[str, Any]) -> models_Message:
+    return models_Message(
         sender=parse_user(data.get("sender", {})),
         recipient=parse_recipient(data.get("recipient", {})),
         timestamp=data.get("timestamp", 0),

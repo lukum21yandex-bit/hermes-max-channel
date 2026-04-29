@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional, Coroutine
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -29,6 +30,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("logs/bot.log", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger("main")
 

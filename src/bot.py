@@ -64,6 +64,7 @@ class HermesMaxBot:
     async def _handle_update(self, update):
         """Dispatch update to appropriate handler."""
         try:
+            logger.debug("Handling update: type=%s", update.update_type)
             if self._update_handler:
                 await self._update_handler(update)
                 return
@@ -72,10 +73,12 @@ class HermesMaxBot:
             from .client import MessageCreatedUpdate
             if isinstance(update, MessageCreatedUpdate):
                 if self._message_handler:
+                    logger.info("Calling message handler for user %s",
+                                update.message.sender.user_id)
                     await self._message_handler(update)
                 else:
                     # Default echo (debug)
-                    text = update.message.body.text or "[no text]"
+                    text = update.message.body.text or "[без текста]"
                     sender = update.message.sender
                     logger.info("Received from %s (id=%s): %s",
                                 sender.name, sender.user_id, text)
