@@ -1,0 +1,43 @@
+name: max-platform
+label: Max
+kind: platform
+version: 2.0.0
+description: >
+  Max (max.ru) gateway adapter plugin for Hermes Agent.
+  Connects the Russian messenger Max to Hermes via Platform API (platform-api.max.ru).
+  Webhook mode for incoming updates, REST API for outbound messages.
+  Supports text, images, audio (with STT transcription), video, file attachments,
+  typing indicators, and access control (allow lists / open access).
+  Audio messages are automatically downloaded and transcribed through Hermes STT pipeline
+  (faster-whisper, Groq Whisper, OpenAI Whisper, or Mistral Voxtral).
+author: Aleksandr P
+homepage: https://github.com/lukum21yandex-bit/hermes-max-channel
+docs: https://dev.max.ru/docs-api
+
+requires_env:
+  - name: MAX_TOKEN
+    description: "Max bot token from https://max.ru (bot settings)"
+    prompt: "Max bot token"
+    password: true
+  - name: MAX_WEBHOOK_URL
+    description: "Public HTTPS URL where Max sends webhook events (e.g. https://hermes.datayoga24.ru/plugins/max/webhook)"
+    prompt: "Webhook URL (HTTPS)"
+    password: false
+
+optional_env:
+  - name: MAX_ALLOWED_USERS
+    description: "Comma-separated Max user IDs allowed to talk to the bot"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: MAX_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the bot (1/true/yes)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MAX_HOME_CHANNEL
+    description: "Chat ID for cron / notification delivery (defaults to bot's own DM)"
+    prompt: "Home channel user ID (or empty)"
+    password: false
+  - name: MAX_API_BASE_URL
+    description: "Max API base URL (default: https://platform-api.max.ru)"
+    prompt: "API base URL"
+    password: false

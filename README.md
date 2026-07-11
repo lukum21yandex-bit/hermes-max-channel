@@ -1,100 +1,99 @@
-# Hermes MAX Channel
+# Max (max.ru) — Hermes Agent Gateway Plugin
 
-Бот для платформы **MAX.ru** (не Telegram!).  
-Работает в режиме longpoll (разработка) → webhook (VPS).
+Gateway-адаптер для российского мессенджера **Max** (max.ru). 
+Подключает Max к Hermes Agent через Platform API — вебхук для входящих, REST API для исходящих.
 
-## Быстрый старт
+## Возможности
+
+- 💬 **Текстовые сообщения** — DM и групповые чаты
+- 🖼️ **Изображения** — получение и отправка
+- 🎤 **Голосовые сообщения** — автоматическая транскрипция через STT-пайплайн Hermes (faster-whisper, Groq, OpenAI, Mistral)
+- 📹 **Видео** — получение вложений
+- 📎 **Файлы** — любые вложения
+- ⌨️ **Typing-индикаторы** — бот показывает «печатает…»
+- 🔐 **Access control** — белый список пользователей или открытый доступ
+- 🔗 **Webhook mode** — надёжная доставка через HTTPS
+
+## Установка
+
+Скопируйте плагин в директорию плагинов Hermes:
 
 ```bash
-# 1. Клонировать репозиторий (уже есть)
-cd hermes-max-channel
-
-# 2. Установить зависимости
-pip install -r deploy/requirements.txt
-
-# 3. Создать .env из примера и вставить токен
-cp .env.example .env
-# отредактируйте .env: MAX_TOKEN=ваш_токен_от_MasterBot
-
-# 4. Запустить бота
-python -m src.main
+cp -r . ~/.hermes/plugins/platforms/max/
 ```
 
-## Получение токена
+## Настройка
 
-1. Откройте MAX, найдите бота **@MasterBot**.
-2. Начните диалог, следуйте инструкциям для создания бота.
-3. После создания бот пришлёт вам **API токен**.
-4. Вставьте токен в `.env` → `MAX_TOKEN=...`
+### Переменные окружения (`~/.hermes/.env`)
 
-## Конфигурация `.env`
+| Переменная | Обязательно | Описание |
+|---|---|---|
+| `MAX_TOKEN` | ✅ | Токен бота из https://max.ru (настройки бота) |
+| `MAX_WEBHOOK_URL` | ✅ | Публичный HTTPS URL для вебхука (напр. `https://your.domain/plugins/max/webhook`) |
+| `MAX_ALLOWED_USERS` | ❌ | Разрешённые user ID через запятую |
+| `MAX_ALLOW_ALL_USERS` | ❌ | `1`/`true` — разрешить всем |
+| `MAX_HOME_CHANNEL` | ❌ | Chat ID для cron/уведомлений |
+| `MAX_API_BASE_URL` | ❌ | API base URL (по умолчанию `https://platform-api.max.ru`) |
 
-| Переменная | Описание | Обязательно |
-|-----------|---------|-------------|
-| `MAX_TOKEN` | Токен бота от @MasterBot | да |
-| `ALLOWED_USER_IDS` | Список user_id через запятую (только они могут писать боту) | нет |
-| `LOG_LEVEL` | Уровень логов (`INFO`/`DEBUG`) | нет |
+### Caddy reverse proxy
 
-## Архитектура кода
-
-```
-src/
-├── models.py      # Dataclasses: User, Message, Update, ...
-├── client.py      # HTTP client с rate limiting (2 RPS)
-├── bot.py         # Основной цикл longpoll, диспетчер хендлеров
-├── main.py        # Точка входа, загрузка .env
-└── handlers/      # ← сюда буду добавлять модули с бизнес-логикой
+```caddy
+your.domain {
+    reverse_proxy /plugins/* 127.0.0.1:9642
+}
 ```
 
-### Реализовано
+### STT (распознавание голосовых)
 
-- Longpoll polling (`GET /updates`) с marker-пагинацией
-- Rate limiting: ≤2 RPS (требование MAX API с 11.05.2026)
-- Автоматические retry (3 попытки, экспоненциальный backoff)
-- Парсинг всех типов update (`message_created`, `bot_started`, …)
-- Отправка сообщений (`POST /messages`) по `user_id` или `chat_id`
+Распознавание работает автоматически через настроенный в Hermes STT-провайдер:
 
-### Планы (постепенно)
+```yaml
+# ~/.hermes/config.yaml
+stt:
+  enabled: true
+  provider: local        # local, groq, openai, mistral
+  local:
+    model: base          # tiny, base, small, medium, large-v3
+```
 
-- [ ] Отправка картинок (upload → attach)
-- [ ] Голосовые/аудио (upload, transcript?)
-- [ ] Inline-кнопки (keyboard)
-- [ ] Режим webhook на VPS (легко, после теста longpoll)
+## Запуск
 
-## Развёртывание на VPS
-
-1. Установить на сервер (Ubuntu/Debian):
-   ```bash
-   apt update && apt install -y python3 python3-pip
-   git clone <repo_url> /opt/hermes-max-channel
-   cd /opt/hermes-max-channel
-   pip install -r deploy/requirements.txt
-   ```
-
-2. Настроить `.env` с `MAX_TOKEN` и `WEBHOOK_SECRET`.
-
-3. Запустить через systemd (шаблон в `deploy/systemd.service`).
-
-4. Открыть HTTPS порт 80/443 → внутренний порт 8000 (nginx в `deploy/nginx.conf`).
-
-5. После поднятия webhook выполнить:
-   ```bash
-   curl -X POST https://platform-api.max.ru/subscriptions \
-     -H "Authorization: $MAX_TOKEN" \
-     -d '{"url":"https://ваш-домен.ru/webhook","secret":"WEBHOOK_SECRET","update_types":["message_created","bot_started"]}'
-   ```
-
-## Отладка
-
-Логи пишутся в `stdout`. Для захвата в файл:
 ```bash
-python -m src.main 2>&1 | tee logs/run.log
+hermes gateway install   # установить как systemd-сервис
+hermes gateway start     # запустить
+hermes gateway status    # проверить статус
 ```
 
-## Сообщество
+## Архитектура
 
-Вопросы → @business_bot или partner_support@max.ru
+```
+Max Platform API
+    ↕ (webhook)
+Caddy (HTTPS) → 127.0.0.1:9642
+    ↓
+Max Adapter (adapter.py)
+    ↓ download audio → cache_audio_from_url()
+MessageEvent(media_urls, media_types)
+    ↓
+Hermes Gateway (run.py)
+    ↓ _enrich_message_with_transcription()
+STT Pipeline (faster-whisper / Groq / OpenAI)
+    ↓
+Agent → Response → Max REST API → User
+```
 
----
+## Требования
 
-**Важно:** Документация MAX: https://dev.max.ru/docs-api
+- Hermes Agent v2.0+
+- Python 3.11+
+- aiohttp
+- ffmpeg (для audio-конвертации)
+- faster-whisper (для local STT) или API-ключ для облачного STT
+
+## Лицензия
+
+MIT
+
+## Автор
+
+Aleksandr P

@@ -1,16 +1,15 @@
-.env
-__pycache__/
+# Runtime
 *.pyc
-.venv/
-venv/
-data/inbox.json
-data/outbox.json
-data/state.json
-db.sqlite3
-logs/
-*.log
-.env.*.local
-bot.pid
-data/*.lock
-data/processed.json
-data/inbox_processed.json
+__pycache__/
+*.pid
+*.lock
+
+# Data
+data/
+inbox/
+outbox/
+processed.json
+
+# Env
+.env
+.env.local
