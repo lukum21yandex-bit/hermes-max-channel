@@ -615,6 +615,10 @@ class MaxAdapter:
         self._disconnecting: bool = False
         self._bot_user_id: int | None = None
         self._bot_info: Dict[str, Any] | None = None
+        # Reply threading: track last message IDs per chat (incoming user msg → reply to it,
+        # outgoing bot msg → user can reply to it)
+        self._last_bot_message_id: Dict[str, str] = {}    # chat_id → last bot message mid
+        self._last_user_message_id: Dict[str, str] = {}   # chat_id → last user message mid
 
         # Webhook HTTP server (aiohttp)
         self._webhook_listen: str = (
@@ -862,6 +866,26 @@ class MaxAdapter:
         if not text and not has_attachments:
             return
 
+        # Reply-to context: if user replied to a message, extract the original text
+        linked_msg = msg.get("link") or {}
+        if linked_msg and isinstance(linked_msg, dict):
+            link_type = linked_msg.get("type", "")
+            # Max API: link.message.text holds the original message text
+            link_message = linked_msg.get("message", {}) or {}
+            link_text = (link_message.get("text") or "").strip()
+            link_sender = linked_msg.get("sender", {}) or {}
+            link_sender_name = link_sender.get("name") or link_sender.get("username", "")
+            is_bot_msg = link_sender.get("is_bot", False)
+
+            if link_text:
+                if link_type == "reply":
+                    who = "your message" if is_bot_msg else f"a message by {link_sender_name}"
+                    quoted = f'[The user replied to {who}: "{link_text[:300]}"]\n\n'
+                else:
+                    quoted = f'[The user forwarded a message by {link_sender_name}: "{link_text[:300]}"]\n\n'
+                text = quoted + text
+                logger.info("Max: reply-to context added (type=%s, orig_text=%d chars)", link_type, len(link_text))
+
         # Download and cache audio files for STT transcription
         audio_paths: List[str] = []
         audio_types: List[str] = []
@@ -892,6 +916,13 @@ class MaxAdapter:
             return
 
         to_num = int(to_id)
+
+        # Track user's message ID for reply threading (bot will reply to this message)
+        user_mid = msg.get("mid")
+        if user_mid:
+            self._last_user_message_id[str(to_num)] = str(user_mid)
+            # Also update the bot reply target to the user's latest message
+            self._last_bot_message_id[str(to_num)] = str(user_mid)
 
         # Send typing indicator
         await self._safe_action(to_num, "typing_on")
@@ -1096,10 +1127,19 @@ class MaxAdapter:
                     return {"ok": True, "message_id": f"max-{int(time.time())}"}
 
         # Text-only fallback or direct send
-        result = await self._api.send_message(cid, clean_text, chat_kind)
+        extra: Dict[str, Any] = {}
+        # Reply-to: if we have a stored last message ID for this chat, reply to it
+        last_msg_id = self._last_bot_message_id.get(str(cid))
+        if last_msg_id:
+            extra["link"] = {"mid": last_msg_id}
+            logger.debug("Max: replying to message %s in chat %s", last_msg_id, cid)
+        result = await self._api.send_message(cid, clean_text, chat_kind, extra)
         if result:
             msg_obj = result.get("message", {}) or {}
             mid = msg_obj.get("mid") if isinstance(msg_obj, dict) else result.get("mid")
+            # Track our last sent message for reply threading
+            if mid:
+                self._last_bot_message_id[str(cid)] = str(mid)
             return {"ok": True, "message_id": mid or f"max-{int(time.time())}"}
 
         return {"ok": False, "error": "send failed"}
