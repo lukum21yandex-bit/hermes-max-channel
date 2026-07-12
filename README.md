@@ -1,99 +1,85 @@
-# Max (max.ru) — Hermes Agent Gateway Plugin
+# Max Platform Adapter for Hermes Agent
 
-Gateway-адаптер для российского мессенджера **Max** (max.ru). 
-Подключает Max к Hermes Agent через Platform API — вебхук для входящих, REST API для исходящих.
+Gateway plugin connecting the Russian messenger [Max](https://max.ru) to Hermes Agent via the Max Platform API.
 
-## Возможности
+## Features
 
-- 💬 **Текстовые сообщения** — DM и групповые чаты
-- 🖼️ **Изображения** — получение и отправка
-- 🎤 **Голосовые сообщения** — автоматическая транскрипция через STT-пайплайн Hermes (faster-whisper, Groq, OpenAI, Mistral)
-- 📹 **Видео** — получение вложений
-- 📎 **Файлы** — любые вложения
-- ⌨️ **Typing-индикаторы** — бот показывает «печатает…»
-- 🔐 **Access control** — белый список пользователей или открытый доступ
-- 🔗 **Webhook mode** — надёжная доставка через HTTPS
+- **Text messaging** — full bidirectional text chat
+- **Audio → STT** — voice messages automatically downloaded and transcribed through Hermes STT pipeline (faster-whisper, Groq, OpenAI, or Mistral)
+- **Reply-to threading** — bot replies are linked to user messages; user replies carry original message context
+- **Inline feedback buttons** — agent can attach 👍/👎 buttons via `FEEDBACK:` directive
+- **Media support** — images, video, files (upload + send)
+- **Typing indicators** — bot sends typing status while processing
+- **Access control** — allow-list or open access
 
-## Установка
+## Installation
 
-Скопируйте плагин в директорию плагинов Hermes:
-
-```bash
-cp -r . ~/.hermes/plugins/platforms/max/
-```
-
-## Настройка
-
-### Переменные окружения (`~/.hermes/.env`)
-
-| Переменная | Обязательно | Описание |
-|---|---|---|
-| `MAX_TOKEN` | ✅ | Токен бота из https://max.ru (настройки бота) |
-| `MAX_WEBHOOK_URL` | ✅ | Публичный HTTPS URL для вебхука (напр. `https://your.domain/plugins/max/webhook`) |
-| `MAX_ALLOWED_USERS` | ❌ | Разрешённые user ID через запятую |
-| `MAX_ALLOW_ALL_USERS` | ❌ | `1`/`true` — разрешить всем |
-| `MAX_HOME_CHANNEL` | ❌ | Chat ID для cron/уведомлений |
-| `MAX_API_BASE_URL` | ❌ | API base URL (по умолчанию `https://platform-api.max.ru`) |
-
-### Caddy reverse proxy
-
-```caddy
-your.domain {
-    reverse_proxy /plugins/* 127.0.0.1:9642
-}
-```
-
-### STT (распознавание голосовых)
-
-Распознавание работает автоматически через настроенный в Hermes STT-провайдер:
+Place the plugin in `~/.hermes/plugins/max-platform/` and configure in `config.yaml`:
 
 ```yaml
-# ~/.hermes/config.yaml
-stt:
-  enabled: true
-  provider: local        # local, groq, openai, mistral
-  local:
-    model: base          # tiny, base, small, medium, large-v3
+gateway:
+  platforms:
+    max:
+      enabled: true
+      extra:
+        token: your_bot_token
+        webhook_url: https://your.domain/plugins/max/webhook
+        allowed_users: []
+        allow_all_users: false
 ```
 
-## Запуск
+Or use environment variables:
 
-```bash
-hermes gateway install   # установить как systemd-сервис
-hermes gateway start     # запустить
-hermes gateway status    # проверить статус
+| Variable | Required | Description |
+|---|---|---|
+| `MAX_TOKEN` | ✅ | Bot token from Max dev portal |
+| `MAX_WEBHOOK_URL` | ✅ | Public HTTPS webhook URL |
+| `MAX_ALLOWED_USERS` | Optional | Comma-separated user IDs |
+| `MAX_ALLOW_ALL_USERS` | Optional | `1`/`true` to allow everyone |
+| `MAX_HOME_CHANNEL` | Optional | Chat ID for cron delivery |
+| `MAX_API_BASE_URL` | Optional | Override API base (default: `https://platform-api.max.ru`) |
+
+## Directives
+
+The agent can use special directives in message text:
+
+### `MEDIA:` — Send images/media
 ```
-
-## Архитектура
-
+Here's a chart:
+MEDIA:https://example.com/chart.png
 ```
-Max Platform API
-    ↕ (webhook)
-Caddy (HTTPS) → 127.0.0.1:9642
-    ↓
-Max Adapter (adapter.py)
-    ↓ download audio → cache_audio_from_url()
-MessageEvent(media_urls, media_types)
-    ↓
-Hermes Gateway (run.py)
-    ↓ _enrich_message_with_transcription()
-STT Pipeline (faster-whisper / Groq / OpenAI)
-    ↓
-Agent → Response → Max REST API → User
+The adapter downloads the URL, uploads to Max, and attaches as media.
+
+### `FEEDBACK:` — Attach feedback buttons
 ```
+Task completed successfully!
 
-## Требования
+FEEDBACK:
+```
+The adapter removes the directive from text and attaches inline keyboard with 👍/👎 buttons. When the user presses a button, a `message_callback` event is received and logged.
 
-- Hermes Agent v2.0+
-- Python 3.11+
-- aiohttp
-- ffmpeg (для audio-конвертации)
-- faster-whisper (для local STT) или API-ключ для облачного STT
+**Usage guidelines:**
+- ✅ Use `FEEDBACK:` on final results, summaries, completed tasks
+- ❌ Do NOT use on progress messages, tool outputs, intermediate steps
 
-## Лицензия
+## Webhook Events
 
-MIT
+The adapter subscribes to:
+- `message_created` — new messages from users
+- `message_callback` — inline button presses
 
-## Автор
+## API Migration
 
-Aleksandr P
+⚠️ **Before July 19, 2026**: migrate from `platform-api.max.ru` to `platform-api2.max.ru` and add Минцифры certificate.
+
+## Version History
+
+- **v2.1.0** — Inline feedback buttons (`FEEDBACK:` directive), `message_callback` handling, `SendResult` fix, `send_typing(metadata)` fix
+- **v2.0.0** — Gateway plugin architecture, STT audio support, reply-to threading
+- **v1.0.0** — Standalone bot (deprecated)
+
+## Links
+
+- [Max API Docs](https://dev.max.ru/docs-api)
+- [Max Dev Portal](https://dev.max.ru)
+- [Hermes Agent](https://hermes-agent.nousresearch.com)

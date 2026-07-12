@@ -64,6 +64,7 @@ _gateway_session: Any = None
 _MessageEvent: Any = None
 _MessageType: Any = None
 _SessionSource: Any = None
+_SendResult: Any = None
 
 
 def _ensure_gateway_imports() -> bool:
@@ -71,7 +72,7 @@ def _ensure_gateway_imports() -> bool:
 
     Returns True on success, False if not available (e.g. tests).
     """
-    global _gateway_base, _gateway_config, _gateway_session, _MessageEvent, _MessageType, _SessionSource
+    global _gateway_base, _gateway_config, _gateway_session, _MessageEvent, _MessageType, _SessionSource, _SendResult
     if _gateway_base is not None:
         return True
     try:
@@ -89,6 +90,7 @@ def _ensure_gateway_imports() -> bool:
         _MessageEvent = _me
         _MessageType = _mt
         _SessionSource = _ss
+        _SendResult = _sr
         return True
     except ImportError:
         return False
@@ -105,7 +107,7 @@ MAX_WEBHOOK_BODY_BYTES = 512 * 1024          # 512 KB
 RETRY_ATTEMPTS = 20
 RETRY_BASE_DELAY = 1                         # seconds (exponential backoff + jitter)
 
-INTERESTING_UPDATE_TYPES = frozenset({"message_created"})
+INTERESTING_UPDATE_TYPES = frozenset({"message_created", "message_callback"})
 
 MEDIA_PLACEHOLDERS = {
     "image": "<media:image>",
@@ -115,6 +117,7 @@ MEDIA_PLACEHOLDERS = {
 }
 
 MEDIA_DIRECTIVE_RE = re.compile(r"(?:^|\n)\s*MEDIA:\s*([^\n]+)\s*(?=\n|$)", re.IGNORECASE)
+FEEDBACK_DIRECTIVE_RE = re.compile(r"(?:^|\n)\s*FEEDBACK:\s*(?=\n|$)", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Max REST API Client
@@ -255,7 +258,7 @@ class MaxApiClient:
         Max requires HTTPS (self-signed certs accepted).
         Body: {url, update_types: ["message_created"]}
         """
-        body = {"url": url, "update_types": ["message_created"]}
+        body = {"url": url, "update_types": ["message_created", "message_callback"]}
         status, data = await self._request("POST", "subscriptions", body=body)
         if status in (200, 201):
             logger.info("Max: webhook registered → %s", url)
@@ -839,12 +842,47 @@ class MaxAdapter:
         for update in updates:
             if not isinstance(update, dict):
                 continue
-            if update.get("update_type") not in INTERESTING_UPDATE_TYPES:
+            utype = update.get("update_type")
+            if utype not in INTERESTING_UPDATE_TYPES:
                 continue
             try:
-                await self._handle_message(update)
+                if utype == "message_callback":
+                    await self._handle_callback(update)
+                else:
+                    await self._handle_message(update)
             except Exception as e:
                 logger.exception("Max: update error: %s", e)
+
+    async def _handle_callback(self, update: Dict[str, Any]) -> None:
+        """Process a ``message_callback`` update — user pressed an inline button."""
+        msg = update.get("message") or {}
+        sender = msg.get("sender", {}) or {}
+        sender_id = self._resolve_user_id(sender)
+        if sender_id is not None and sender_id == self._bot_user_id:
+            return
+
+        # Extract callback payload
+        callback_data = update.get("callback") or {}
+        payload = callback_data.get("payload") or update.get("payload") or ""
+        # Max sends the original message mid in update.message
+        orig_text = (msg.get("text") or "").strip()
+
+        # Map payload to feedback
+        feedback_map = {
+            "fb:like": "👍 (пользователь доволен ответом)",
+            "fb:dislike": "👎 (пользователь недоволен ответом)",
+        }
+        feedback = feedback_map.get(payload, payload)
+
+        logger.info("Max: callback received — payload=%s from user=%s", payload, sender_id)
+        logger.info("Max: feedback=%s on message: %s", feedback, orig_text[:200])
+
+        # Store feedback for potential future use
+        chat_id = str(msg.get("recipient", {}).get("chat_id") or sender_id or "")
+        if chat_id and not hasattr(self, '_feedback_log'):
+            self._feedback_log = {}
+        if chat_id:
+            self._feedback_log[chat_id] = {"payload": payload, "feedback": feedback, "timestamp": time.time()}
 
     async def _handle_message(self, update: Dict[str, Any]) -> None:
         """Process a single ``message_created`` update."""
@@ -1075,7 +1113,7 @@ class MaxAdapter:
         except Exception:
             pass
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata: Any = None) -> None:
         try:
             await self._safe_action(int(chat_id), "typing_on")
         except (ValueError, TypeError):
@@ -1083,18 +1121,25 @@ class MaxAdapter:
 
     # ── Sending messages ──────────────────────────────────────────────────
 
+    # Inline feedback buttons attached to every bot response
+    _FEEDBACK_KEYBOARD = [{
+        "type": "inline_keyboard",
+        "payload": {
+            "buttons": [[
+                {"type": "callback", "text": "👍", "payload": "fb:like"},
+                {"type": "callback", "text": "👎", "payload": "fb:dislike"},
+            ]]
+        },
+    }]
+
     async def send(
         self, chat_id: str, text: str = "",
         reply_options: Dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Dict[str, Any] | None:
-        logger.warning("MAX_SEND_CALLED: chat_id=%s text_len=%d kwargs_keys=%s text_start=%s",
-                       chat_id, len(text), list(kwargs.keys()), repr(text[:50]))
+        _ensure_gateway_imports()
         if not self._api or self._disconnecting:
             return None
-
-        logger.warning("MAX_SEND_CALLED: chat_id=%s text_len=%d kwargs_keys=%s text_start=%s",
-                       chat_id, len(text), list(kwargs.keys()), repr(text[:50]))
 
         # Gateway may pass text as ``content`` keyword arg or as positional arg.
         if not text and "content" in kwargs:
@@ -1102,7 +1147,6 @@ class MaxAdapter:
         text = str(text or "")
 
         if not self._api or self._disconnecting:
-            logger.warning("MAX_SEND_SKIP: no api or disconnecting")
             return None
 
         try:
@@ -1114,35 +1158,43 @@ class MaxAdapter:
         chat_kind = "group" if cid < 0 else "direct"
         clean_text, media_urls = _parse_media_directives(text)
 
-        logger.warning("MAX_SEND_SEND: to=%s kind=%s text_len=%d media=%d",
-                       chat_id, chat_kind, len(clean_text), len(media_urls))
+        # Check for FEEDBACK: directive — agent requests feedback buttons
+        has_feedback = bool(FEEDBACK_DIRECTIVE_RE.search(text))
+        if has_feedback:
+            clean_text = FEEDBACK_DIRECTIVE_RE.sub("", clean_text)
+            clean_text = re.sub(r"\n{3,}", "\n\n", clean_text).strip()
 
         if media_urls:
             attachments = await self._prepare_attachments(media_urls)
             if attachments:
+                if has_feedback:
+                    attachments.extend(self._FEEDBACK_KEYBOARD)
                 result = await self._api.send_message_with_attachments(
                     cid, clean_text, chat_kind, attachments,
                 )
                 if result:
-                    return {"ok": True, "message_id": f"max-{int(time.time())}"}
+                    msg_obj = result.get("message", {}) or {}
+                    mid = msg_obj.get("mid") if isinstance(msg_obj, dict) else result.get("mid")
+                    if mid:
+                        self._last_bot_message_id[str(cid)] = str(mid)
+                    return _SendResult(success=True, message_id=mid or f"max-{int(time.time())}")
 
-        # Text-only fallback or direct send
+        # Text-only send
         extra: Dict[str, Any] = {}
-        # Reply-to: if we have a stored last message ID for this chat, reply to it
         last_msg_id = self._last_bot_message_id.get(str(cid))
         if last_msg_id:
             extra["link"] = {"mid": last_msg_id}
-            logger.debug("Max: replying to message %s in chat %s", last_msg_id, cid)
+        if has_feedback:
+            extra["attachments"] = list(self._FEEDBACK_KEYBOARD)
         result = await self._api.send_message(cid, clean_text, chat_kind, extra)
         if result:
             msg_obj = result.get("message", {}) or {}
             mid = msg_obj.get("mid") if isinstance(msg_obj, dict) else result.get("mid")
-            # Track our last sent message for reply threading
             if mid:
                 self._last_bot_message_id[str(cid)] = str(mid)
-            return {"ok": True, "message_id": mid or f"max-{int(time.time())}"}
+            return _SendResult(success=True, message_id=mid or f"max-{int(time.time())}")
 
-        return {"ok": False, "error": "send failed"}
+        return _SendResult(success=False, error="send failed")
 
     async def _prepare_attachments(self, urls: List[str]) -> List[Dict[str, Any]]:
         if not self._api or not self._session:
@@ -1263,6 +1315,10 @@ def register(ctx: Any) -> None:
             "Max supports plain text and images. "
             "To send images or other media, include the URL on its own line "
             "prefixed with MEDIA: (e.g. MEDIA:https://example.com/photo.jpg). "
+            "To attach feedback buttons (👍/👎) to your message — only for "
+            "final results or summaries where user feedback is valuable — "
+            "include FEEDBACK: on its own line. Do NOT add FEEDBACK: to "
+            "progress messages, tool outputs, or intermediate steps. "
             "Keep responses concise and conversational."
         ),
     )
