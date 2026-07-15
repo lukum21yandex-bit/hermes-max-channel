@@ -1,7 +1,7 @@
 """
 Max (max.ru) Platform Adapter for Hermes Agent.
 
-Connects to the Russian messenger Max via its Platform API (platform-api.max.ru).
+Connects to the Russian messenger Max via its Platform API (platform-api2.max.ru).
 Uses webhook mode: the Hermes gateway registers an HTTP endpoint that
 receives Max updates, and the Max REST API for outbound messages.
 
@@ -27,7 +27,7 @@ Configuration in config.yaml::
             webhook_url: https://your.domain/plugins/max/webhook
             allowed_users: []
             allow_all_users: false
-            api_base_url: https://platform-api.max.ru
+            api_base_url: https://platform-api2.max.ru
 
 Environment variables (override YAML):
 
@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -100,12 +101,28 @@ def _ensure_gateway_imports() -> bool:
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_API_BASE = "https://platform-api.max.ru"
+MAX_API_BASE = "https://platform-api2.max.ru"
 MAX_MESSAGE_LENGTH = 4000
 MAX_MEDIA_FETCH_BYTES = 50 * 1024 * 1024    # 50 MB
 MAX_WEBHOOK_BODY_BYTES = 512 * 1024          # 512 KB
 RETRY_ATTEMPTS = 20
 RETRY_BASE_DELAY = 1                         # seconds (exponential backoff + jitter)
+RUSSIAN_CA_PEM = "/etc/ssl/certs/russian_trusted_root_ca.pem"
+
+# ---------------------------------------------------------------------------
+# SSL context factory
+# ---------------------------------------------------------------------------
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """Create SSL context that also trusts Минцифры (Russian Trusted Root CA).
+
+    platform-api2.max.ru is served with a certificate signed by the
+    Ministry of Digital Development (Russian Trusted Sub CA), which is
+    not in the default CA bundle.
+    """
+    ctx = ssl.create_default_context(cafile=RUSSIAN_CA_PEM)
+    return ctx
 
 INTERESTING_UPDATE_TYPES = frozenset({"message_created", "message_callback"})
 
@@ -150,7 +167,7 @@ class MaxApiClient:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_create_ssl_context()))
             self._own_session = True
         return self._session
 
@@ -501,10 +518,14 @@ def _env_enablement() -> Dict[str, Any] | None:
 
 
 async def _standalone_send(
+    platform_config: Any,
     chat_id: str,
     text: str,
     *,
     token: str | None = None,
+    thread_id: str | None = None,
+    media_files: List[str] | None = None,
+    force_document: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Send a message to Max without a running gateway adapter.
@@ -512,20 +533,27 @@ async def _standalone_send(
     Used by the cron scheduler when ``deliver=max`` is specified and the
     gateway process is not running.
     """
-    resolved_token = token or os.getenv("MAX_TOKEN", "").strip()
-    if not resolved_token:
-        return {"ok": False, "error": "MAX_TOKEN not set"}
-    api = MaxApiClient(resolved_token)
+    # Extract token from platform_config if not provided
+    if token is None:
+        if hasattr(platform_config, 'extra'):
+            token = platform_config.extra.get("token")
+        if not token:
+            token = os.getenv("MAX_TOKEN", "").strip()
+    
+    if not token:
+        return {"success": False, "error": "MAX_TOKEN not set"}
+    
+    api = MaxApiClient(token)
     try:
         cid = int(chat_id)
         chat_kind = "group" if cid < 0 else "direct"
         clean, _ = _parse_media_directives(text)
         result = await api.send_message(cid, clean, chat_kind)
         if result:
-            return {"ok": True, "channel": "max", "message_id": f"max-{int(time.time())}"}
-        return {"ok": False, "channel": "max", "error": "send failed"}
+            return {"success": True, "channel": "max", "message_id": f"max-{int(time.time())}"}
+        return {"success": False, "channel": "max", "error": "send failed"}
     except Exception as e:
-        return {"ok": False, "channel": "max", "error": str(e)}
+        return {"success": False, "channel": "max", "error": str(e)}
     finally:
         await api.close()
 
@@ -642,6 +670,8 @@ class MaxAdapter:
         self._session_store: Any = None
         self._fatal_error_handler: Any = None
         self._pending_messages: Dict[str, Any] = {}
+        self._authorization_check: Any = None
+        self._busy_text_mode: bool = False
 
     @property
     def name(self) -> str:
@@ -680,6 +710,14 @@ class MaxAdapter:
         """Set the session store for persisting conversations."""
         self._session_store = session_store
 
+    def set_topic_recovery_fn(self, fn: Any) -> None:
+        """Set topic recovery function — stub, Max has no forum topics."""
+        pass
+
+    def set_authorization_check(self, fn: Any) -> None:
+        """Set authorization check callback — stub, Max adapter handles auth via allow list."""
+        self._authorization_check = fn
+
     def get_pending_message(self, session_key: str) -> Any | None:
         """Return and remove a pending (interrupt) message for this session."""
         return self._pending_messages.pop(session_key, None)
@@ -696,7 +734,7 @@ class MaxAdapter:
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, **kwargs: Any) -> bool:
         """Verify token, register webhook, start heartbeat."""
         if not self._token:
             logger.error("Max: token missing — set MAX_TOKEN")
@@ -705,7 +743,7 @@ class MaxAdapter:
             logger.error("Max: webhook_url missing — set MAX_WEBHOOK_URL")
             return False
 
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_create_ssl_context()))
         self._api = MaxApiClient(self._token, base_url=self._api_base, session=self._session)
 
         # Verify token
@@ -721,6 +759,14 @@ class MaxAdapter:
             "Max: authenticated — bot=%s user_id=%s",
             info.get("name", "?"), self._bot_user_id,
         )
+
+        # Delete any stale webhook first, then register fresh.
+        # This guarantees update_types always includes message_callback,
+        # even if a previous gateway instance registered without it.
+        try:
+            await self._api.delete_webhook()
+        except Exception:
+            pass  # best-effort — no webhook to delete is fine
 
         # Register webhook with Max
         if not await self._api.set_webhook(self._webhook_url):
@@ -854,7 +900,12 @@ class MaxAdapter:
                 logger.exception("Max: update error: %s", e)
 
     async def _handle_callback(self, update: Dict[str, Any]) -> None:
-        """Process a ``message_callback`` update — user pressed an inline button."""
+        """Process a ``message_callback`` update — user pressed an inline button.
+
+        Forwards the callback to the agent as a text message so it can react.
+        Feedback payloads (fb:like / fb:dislike) are mapped to human-readable
+        Russian text before forwarding.
+        """
         msg = update.get("message") or {}
         sender = msg.get("sender", {}) or {}
         sender_id = self._resolve_user_id(sender)
@@ -869,8 +920,8 @@ class MaxAdapter:
 
         # Map payload to feedback
         feedback_map = {
-            "fb:like": "👍 (пользователь доволен ответом)",
-            "fb:dislike": "👎 (пользователь недоволен ответом)",
+            "fb:like": "👍 Пользователь оценил ответ положительно",
+            "fb:dislike": "👎 Пользователь оценил ответ отрицательно",
         }
         feedback = feedback_map.get(payload, payload)
 
@@ -878,11 +929,43 @@ class MaxAdapter:
         logger.info("Max: feedback=%s on message: %s", feedback, orig_text[:200])
 
         # Store feedback for potential future use
-        chat_id = str(msg.get("recipient", {}).get("chat_id") or sender_id or "")
+        recipient = msg.get("recipient", {}) or {}
+        chat_id = str(recipient.get("chat_id") or sender_id or "")
         if chat_id and not hasattr(self, '_feedback_log'):
             self._feedback_log = {}
         if chat_id:
             self._feedback_log[chat_id] = {"payload": payload, "feedback": feedback, "timestamp": time.time()}
+
+        # Forward callback as a message event to the agent so it can react
+        from_id = str(sender_id) if sender_id else ""
+        chat_kind = self._resolve_chat_kind(recipient)
+        to_id = self._resolve_reply_id(recipient, chat_kind, from_id)
+
+        if not to_id or not from_id:
+            logger.debug("Max: callback — skip, missing sender/recipient id")
+            return
+
+        if not self._is_allowed(from_id):
+            logger.debug("Max: callback — user %s not allowed", from_id)
+            return
+
+        source = self._build_source(chat_kind, from_id, to_id, sender, recipient)
+
+        _ensure_gateway_imports()
+        if self._message_handler and _MessageEvent and _MessageType:
+            try:
+                me = _MessageEvent(
+                    text=feedback,
+                    message_type=_MessageType.TEXT,
+                    source=source,
+                    message_id=f"max-cb-{int(time.time() * 1000)}",
+                    timestamp=__import__("datetime").datetime.now(),
+                    media_urls=[],
+                    media_types=[],
+                )
+                await self._message_handler(me)
+            except Exception as e:
+                logger.exception("Max: callback handler error: %s", e)
 
     async def _handle_message(self, update: Dict[str, Any]) -> None:
         """Process a single ``message_created`` update."""
@@ -1119,6 +1202,19 @@ class MaxAdapter:
         except (ValueError, TypeError):
             pass
 
+    async def pause_typing_for_chat(self, chat_id: str) -> None:
+        """Pause typing indicator for a chat."""
+        # Max API doesn't have explicit pause typing action
+        # We can either ignore or send typing_off
+        try:
+            await self._safe_action(int(chat_id), "typing_off")
+        except (ValueError, TypeError):
+            pass
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        """Resume typing indicator — stub, Max API has no pause/resume."""
+        pass
+
     # ── Sending messages ──────────────────────────────────────────────────
 
     # Inline feedback buttons attached to every bot response
@@ -1220,9 +1316,10 @@ class MaxAdapter:
         self, chat_id: str, message_id: str, text: str = "",
         reply_options: Dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> bool:
+    ) -> Any:
         """Edit a sent message. Max does not support editing — no-op."""
-        return True
+        _ensure_gateway_imports()
+        return _SendResult(success=True, message_id=message_id, text=text)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: str = "",

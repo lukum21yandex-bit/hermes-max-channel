@@ -1,17 +1,15 @@
 name: max-platform
 label: Max
 kind: platform
-version: 2.1.0
+version: 1.2.0
 description: >
-  Max (max.ru) gateway adapter plugin for Hermes Agent.
-  Connects the Russian messenger Max to Hermes via Platform API (platform-api.max.ru).
-  Webhook mode for incoming updates, REST API for outbound messages.
-  Supports text, images, audio (with STT transcription), video, file attachments,
-  typing indicators, reply-to threading, inline feedback buttons, and access control.
-  Audio messages are automatically downloaded and transcribed through Hermes STT pipeline
-  (faster-whisper, Groq Whisper, OpenAI Whisper, or Mistral Voxtral).
-author: Aleksandr P
-homepage: https://github.com/lukum21yandex-bit/hermes-max-channel
+  Max (max.ru) gateway adapter for Hermes Agent.
+  Connects to the Russian messenger Max via Platform API and relays messages
+  between Max chats/DMs and the Hermes agent. Uses webhook mode for incoming
+  updates and the Max REST API for outbound messages.
+  Supports text, images, audio, video, file attachments, and typing indicators.
+author: Hermes Community
+homepage: https://github.com/lukum21yandex-bit/hermes-max-platform
 docs: https://dev.max.ru/docs-api
 
 requires_env:
@@ -38,6 +36,6 @@ optional_env:
     prompt: "Home channel user ID (or empty)"
     password: false
   - name: MAX_API_BASE_URL
-    description: "Max API base URL (default: https://platform-api.max.ru)"
+    description: "Max API base URL (default: https://platform-api2.max.ru)"
     prompt: "API base URL"
     password: false
